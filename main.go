@@ -64,6 +64,17 @@ type FileSystem struct {
 	Journal    []JournalEntry
 }
 
+type Snapshot struct {
+	Inodes     []*Inode
+	DataBlocks [MaxBlocks][]byte
+}
+
+type DirectorySnapshot struct {
+	RootInode  *Inode
+	Inodes     []*Inode
+	DataBlocks [MaxBlocks][]byte
+}
+
 var fs FileSystem
 
 // Initialize the filesystem
@@ -482,6 +493,85 @@ func checkBTreeConsistency(node *BTreeNode, parentInode int) {
 	}
 }
 
+var filesystemSnapshots []Snapshot
+var directorySnapshots map[string]DirectorySnapshot
+
+func init() {
+	directorySnapshots = make(map[string]DirectorySnapshot)
+}
+
+// Create a snapshot of the entire filesystem
+func createFilesystemSnapshot() {
+	snapshot := Snapshot{
+		Inodes:     make([]*Inode, len(fs.Superblock.InodeMap)),
+		DataBlocks: fs.DataBlocks,
+	}
+
+	copy(snapshot.Inodes, fs.Superblock.InodeMap)
+	filesystemSnapshots = append(filesystemSnapshots, snapshot)
+	fmt.Println("Filesystem snapshot created")
+}
+
+// Restore the latest filesystem snapshot
+func restoreFilesystemSnapshot() {
+	if len(filesystemSnapshots) == 0 {
+		fmt.Println("No filesystem snapshots available")
+		return
+	}
+
+	snapshot := filesystemSnapshots[len(filesystemSnapshots)-1]
+	fs.Superblock.InodeMap = snapshot.Inodes
+	fs.DataBlocks = snapshot.DataBlocks
+	fmt.Println("Filesystem snapshot restored")
+}
+
+// createDirectorySnapshot creates a snapshot of a specific directory
+func createDirectorySnapshot(path string) {
+	inode := resolvePath(path)
+	if inode == nil || !inode.IsDirectory {
+		fmt.Println("Invalid directory")
+		return
+	}
+
+	snapshot := DirectorySnapshot{
+		RootInode:  inode,
+		Inodes:     make([]*Inode, 0),
+		DataBlocks: fs.DataBlocks,
+	}
+
+	snapshot.Inodes = append(snapshot.Inodes, inode)
+	snapshotDirectory(inode, &snapshot)
+	directorySnapshots[path] = snapshot
+	fmt.Println("Directory snapshot created for:", path)
+}
+
+// snapshotDirectory stores directory records
+func snapshotDirectory(inode *Inode, snapshot *DirectorySnapshot) {
+	btree := deserializeBTree(fs.DataBlocks[inode.BlockPointer])
+	for _, entry := range btree.Root.Keys {
+		childInode := fs.Superblock.InodeMap[entry.InodeIndex]
+		snapshot.Inodes = append(snapshot.Inodes, childInode)
+		if childInode.IsDirectory {
+			snapshotDirectory(childInode, snapshot)
+		}
+	}
+}
+
+// restoreDirectorySnapshot restores a specific directory snapshot
+func restoreDirectorySnapshot(path string) {
+	snapshot, exists := directorySnapshots[path]
+	if !exists {
+		fmt.Println("No snapshot available for directory:", path)
+		return
+	}
+
+	for _, inode := range snapshot.Inodes {
+		fs.Superblock.InodeMap[inode.InodeNumber] = inode
+	}
+	fs.DataBlocks = snapshot.DataBlocks
+	fmt.Println("Directory snapshot restored for:", path)
+}
+
 func main() {
 	initializeFS()
 
@@ -493,36 +583,33 @@ func main() {
 	touch("/root/dir1", "file1")
 
 	// Create a filesystem snapshot
-	//createFilesystemSnapshot()
+	createFilesystemSnapshot()
 
 	// Modify the filesystem
 	mkdir("/root", "dir2")
 	touch("/root/dir2", "file2")
 
-	// List root directory
 	ls("/root")
 
 	// Restore the filesystem snapshot
-	//restoreFilesystemSnapshot()
+	restoreFilesystemSnapshot()
 
 	// List root directory after restoring snapshot
 	ls("/root")
 
 	// Create a directory snapshot
-	//createDirectorySnapshot("/root/dir1")
+	createDirectorySnapshot("/root/dir1")
 
 	// Modify the directory
 	touch("/root/dir1", "file2")
 
-	// List directory
 	ls("/root/dir1")
 
 	// Restore the directory snapshot
-	//restoreDirectorySnapshot("/root/dir1")
+	restoreDirectorySnapshot("/root/dir1")
 
 	// List directory after restoring snapshot
 	ls("/root/dir1")
 
-	// Check filesystem consistency
 	checkFilesystemConsistency()
 }
